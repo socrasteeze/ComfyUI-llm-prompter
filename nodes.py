@@ -12,6 +12,7 @@ Highlights:
 
 import base64
 import gc
+import hashlib
 import io
 import json
 import os
@@ -29,7 +30,9 @@ from .llama_core import LLMEngine, CHAT_HANDLERS, normalize_handler
 from .presets import (
     INSTRUCTION_PRESETS,
     INSTRUCTION_NAMES,
+    list_ref_presets,
     list_system_presets,
+    load_ref_preset,
     load_system_preset,
 )
 from .support.cqdm import cqdm
@@ -64,7 +67,7 @@ _REMEMBER = (
     "max_tokens", "temperature", "top_k", "top_p", "min_p", "typical_p", "repeat_penalty",
     "frequency_penalty", "mirostat_mode", "mirostat_tau", "mirostat_eta", "type_k", "type_v",
     "max_size", "image_min_tokens", "image_max_tokens",
-    "mtp_speculative", "mtp_draft_max",
+    "mtp_speculative", "mtp_draft_max", "ref_preset",
 )
 
 
@@ -143,6 +146,91 @@ def _tensor_to_b64(frame, max_size=None):
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _wrap(text, prefix, suffix):
+    """Add prefix/suffix only when they are not already there.
+
+    A generated prompt gets fed back into final_prompt, so a re-run would glue the
+    same prefix on again and again. Checking first makes the wrap idempotent —
+    running the node ten times on one prompt leaves exactly one copy of each.
+    """
+    if prefix and not text.startswith(prefix):
+        text = prefix + text
+    if suffix and not text.endswith(suffix):
+        text = text + suffix
+    return text
+
+
+# --- reference-image description cache ---------------------------------------------------
+# The identity reference is described ONCE and the resulting text is reused for every frame.
+# Why: sending the reference along with each frame made the model re-describe the face on
+# every call, so a six-image batch came back with six DIFFERENT faces (one of them even had a
+# different eye colour). One description, reused verbatim, cannot drift.
+#
+# _REF_LAST maps a node's unique_id -> the hash of (reference pixels + ref preset text) that
+# the stored description was made from. Same hash on the next run => reuse, no LLM call for
+# the reference at all. Swap the image (or the preset) and the hash differs => describe once,
+# freshly. Process-local: after a ComfyUI restart the cache is empty and the text saved in the
+# widget is adopted for the current reference (use refresh_ref to force a re-describe).
+_REF_LAST = {}
+
+
+def _ref_hash(frames, sys_text):
+    """Content hash of the reference frames plus the instruction they are described with."""
+    h = hashlib.blake2b(digest_size=16)
+    h.update(sys_text.encode("utf-8", "ignore"))
+    for f in frames:
+        try:
+            h.update(f.cpu().numpy().tobytes())
+        except Exception:
+            h.update(repr(f).encode("utf-8", "ignore"))
+    return h.hexdigest()
+
+
+def _ref_default(presets):
+    """Preselect the bundled face-only preset for the reference pass when it is installed."""
+    for want in ("Face_Only_Identity_Im1.txt", "Ref_Face_Plus_Frame.txt"):
+        if want in presets:
+            return want
+    return "Custom"
+
+
+_TWO_IMAGE_RE = re.compile(
+    r"\bimages?\s*[12]\b"
+    r"|\b(?:first|second)\s+(?:input\s+|reference\s+)?image\b"
+    r"|\btwo\s+images\b",
+    re.I)
+
+
+def _warn_two_image_preset(sys_text, user_text):
+    """A preset written for the old two-image flow silently poisons the new one.
+
+    With reference_image connected each caption call now carries exactly ONE image, so an
+    instruction that says "take the face from the FIRST image" leaves the model hunting for a
+    picture that is not there — it falls back to the frame's own face and invents an identity,
+    which is the very drift the fixed identity block exists to prevent. Cheap to detect, so say
+    it out loud instead of letting six captions come back wrong.
+    """
+    for label, text in (("system_prompt / system_preset", sys_text),
+                        ("instruction / instruction_preset", user_text)):
+        m = _TWO_IMAGE_RE.search(text or "")
+        if m:
+            print(f"[llm-prompter] WARNING: reference_image is connected, but {label} still talks "
+                  f"about two images (found {m.group(0)!r}). Each frame call now gets ONE image and "
+                  f"the identity arrives as text, so that preset will make the model describe the "
+                  f"frame's own face. Switch to a scene-only preset "
+                  f"(e.g. 'Scene only (face comes from ref_description)' + Scene_NoFace_Im2.txt).")
+
+
+def _join_desc(face_block, text):
+    """Identity block first, scene second — one space, no double punctuation."""
+    a, b = (face_block or "").strip(), (text or "").strip()
+    if not a:
+        return b
+    if not b:
+        return a
+    return f"{a} {b}"
+
+
 def _image_item(b64):
     return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
 
@@ -183,6 +271,7 @@ class ArtfatLLMPrompter:
         models = [f for f in ggufs if "mmproj" not in f.lower()] or ["<put GGUF in models/LLM or models/text_encoders>"]
         mmprojs = ["None"] + [f for f in ggufs if "mmproj" in f.lower()]
         sys_presets = list_system_presets()
+        ref_presets = list_ref_presets()
         types = {
             "required": {
                 "model": (models,),
@@ -266,10 +355,19 @@ class ArtfatLLMPrompter:
                                                 "tooltip": "Use the model's built-in MTP/NextN heads to draft tokens. TEXT-ONLY: automatically disabled when an mmproj is loaded, because MTP cannot draft across image tokens. Only works on '-mtp' GGUF builds; on any other model it is ignored and the model loads normally. Costs a few hundred MB of VRAM. Measured +90% tok/s on Qwen3.8-27B."}),
                 "mtp_draft_max": ("INT", {"default": 2, "min": 1, "max": 8, "step": 1,
                                           "tooltip": "How many tokens MTP drafts ahead per step. 2 is the value upstream recommends for 27B. Higher drafts more but wastes more when a guess is rejected."}),
+                # --- reference description (added at the END so no positional widget-value drift) ---
+                "ref_preset": (ref_presets, {"default": _ref_default(ref_presets),
+                                             "tooltip": "Preset used for the ONE call that describes the reference_image. Face-only presets work best: the block is prepended to every frame's caption, so it must contain nothing scene-specific (no clothing, pose, light or background)."}),
+                "ref_description": ("STRING", {"default": "", "multiline": True,
+                                               "placeholder": "identity block — written here automatically from reference_image, then reused for every frame (editable)",
+                                               "tooltip": "Filled in by the node after it describes reference_image, and reused verbatim on every later run as long as the reference does not change. Edit it freely: your text is what gets prepended. Clear it (or tick refresh_ref) to have the reference described again."}),
+                "refresh_ref": ("BOOLEAN", {"default": False,
+                                            "tooltip": "Describe reference_image again even though it has not changed. Use after editing ref_preset by hand, or to get a second opinion on the same face."}),
             },
             "optional": {
                 "image_1": ("IMAGE",),
                 "image_2": ("IMAGE",),
+                "reference_image": ("IMAGE", {"tooltip": "Identity reference. Described ONCE with the ref_preset, and that text (see ref_description) is prepended to every caption — so every frame in a batch carries the exact same face. The image itself is never sent with the frames, so the model cannot re-describe the face and drift between captions. Re-described only when this image changes, or on refresh_ref. Pair it with a scene-only instruction so the face is not described twice."}),
                 "clip": ("CLIP",),
                 "queue": (any_type, {"tooltip": "Optional chain input to force execution order between prompter nodes."}),
             },
@@ -299,12 +397,21 @@ class ArtfatLLMPrompter:
         return frames
 
     def _resolve_text(self, system_preset, system_prompt, instruction_preset, instruction, user_preset):
+        """Resolve the system and user text, with the PRESET as the authority.
+
+        A named preset wins over whatever sits in the matching text box; select "Custom" to
+        use your own text. The reverse (box wins, preset read only when the box is empty) made
+        the dropdown a lie: text left behind by an earlier preset kept running, and re-picking
+        the value already displayed fires no change event, so the web UI never refreshed the box
+        either. The only escape was hand-clearing it. This way the dropdown always describes
+        what the node actually does, and edits live under "Custom" where they belong.
+        """
         sys_text = system_prompt.strip()
-        if not sys_text and system_preset not in ("Custom", "None", ""):
-            sys_text = load_system_preset(system_preset) or ""
+        if system_preset not in ("Custom", "None", ""):
+            sys_text = load_system_preset(system_preset) or sys_text
         instr = instruction.strip()
-        if not instr and instruction_preset != "Custom":
-            instr = INSTRUCTION_PRESETS.get(instruction_preset, "")
+        if instruction_preset != "Custom":
+            instr = INSTRUCTION_PRESETS.get(instruction_preset) or instr
         parts = [p for p in (instr, user_preset.strip()) if p]
         user_text = "\n\n".join(parts)
         return sys_text, user_text
@@ -376,7 +483,8 @@ class ArtfatLLMPrompter:
             mirostat_mode, mirostat_tau, mirostat_eta, type_k, type_v, max_size,
             image_min_tokens, image_max_tokens, freeze=False, batch_mode=False, batch_prompts="",
             mtp_speculative=False, mtp_draft_max=2,
-            image_1=None, image_2=None, clip=None, queue=None, unique_id=None):
+            ref_preset="Custom", ref_description="", refresh_ref=False,
+            image_1=None, image_2=None, reference_image=None, clip=None, queue=None, unique_id=None):
 
         # --- sanitize every widget value (tolerate stale / shifted saved values) ---
         n_ctx = int(_num(n_ctx, 8192, 1024, cast=int))
@@ -422,6 +530,9 @@ class ArtfatLLMPrompter:
         suffix = str(suffix or "")
         batch_mode = bool(batch_mode)
         batch_prompts = str(batch_prompts or "")
+        ref_preset = str(ref_preset or "Custom")
+        ref_description = str(ref_description or "")
+        refresh_ref = bool(refresh_ref)
 
         # Remember the technical settings so the next freshly-dragged node inherits them.
         _save_last_settings(locals())
@@ -453,7 +564,7 @@ class ArtfatLLMPrompter:
                     ln = ln.strip()
                     if ln and not ln.startswith("#"):
                         lines.append(ln)
-            wrapped = [f"{prefix}{ln}{suffix}" if (prefix or suffix) else ln for ln in lines]
+            wrapped = [_wrap(ln, prefix, suffix) for ln in lines]
             if not wrapped:
                 wrapped = [""]
             print(f"[llm-prompter] batch_mode: {len(wrapped)} prompt(s) -> positive_list (LLM skipped)")
@@ -467,11 +578,12 @@ class ArtfatLLMPrompter:
         sys_text, user_text = self._resolve_text(
             system_preset, system_prompt, instruction_preset, instruction, user_preset)
         frames = self._collect_frames(image_1, image_2)
+        ref_frames = self._collect_frames(reference_image, None)
         keep_think = False  # reasoning is always stripped from the prompt output
 
         def finalize(p):
             p = _clean(p, keep_think) if llm_enabled else p.strip()
-            return f"{prefix}{p}{suffix}" if (prefix or suffix) else p
+            return _wrap(p, prefix, suffix)
 
         # `freeze` is set by web/llm_prompter.js to True only when the seed's control_after_generate
         # is "fixed" (a stable per-user choice, unlike the seed which changes on randomize). So:
@@ -480,6 +592,7 @@ class ArtfatLLMPrompter:
         frozen = bool(llm_enabled and freeze and final_prompt.strip())
 
         prompts = []
+        face_block = ""
 
         if not llm_enabled:
             # LLM off: encode ONLY the final_prompt text. The LLM-only fields (instruction,
@@ -522,24 +635,79 @@ class ArtfatLLMPrompter:
             if sys_text:
                 base_msgs.append({"role": "system", "content": sys_text})
 
+            # --- identity reference: described ONCE, then reused on every frame ---------------
+            # The reference is deliberately NOT sent with each frame any more. Sending it made the
+            # model re-describe the face per call, and the six captions of one batch came back with
+            # six different faces. Now one fixed block is produced (or reused) and prepended to
+            # every caption, so the identity in the text cannot drift between frames.
+            if ref_frames:
+                _warn_two_image_preset(sys_text, user_text)
+                ref_sys = ""
+                if ref_preset not in ("Custom", "None", ""):
+                    ref_sys = load_ref_preset(ref_preset) or ""
+                if not ref_sys.strip():
+                    ref_sys = (
+                        "Describe ONLY the permanent facial identity of the person in the image: "
+                        "face proportions and widths, jaw and chin, eyes with exact iris colour, "
+                        "brow thickness and shape, nose bridge and nostril width, lip width and "
+                        "fullness, skin tone with undertone, texture, pores and the placement of "
+                        "freckles or moles, plus hair colour and texture. Never mention hairstyle, "
+                        "clothing, jewellery, makeup, pose, expression, background, lighting or "
+                        "framing — those change from photo to photo and would clash with the scene "
+                        "text. Reproduce the actual widths; never narrow, refine or beautify. "
+                        "Output ONE flowing paragraph of 60-80 words, English only, nothing else."
+                    )
+                rhash = _ref_hash(ref_frames, ref_sys)
+                key = str(unique_id)
+                known = _REF_LAST.get(key)
+                have = ref_description.strip()
+                # Reuse when there is text AND either this process has never seen a reference for
+                # this node (restart: adopt what the workflow saved) or the reference is unchanged.
+                reuse = bool(have) and not refresh_ref and (known is None or known == rhash)
+                if reuse:
+                    face_block = have
+                    print(f"[llm-prompter] reference unchanged -> reusing stored description "
+                          f"({len(face_block.split())} words), LLM not called for the reference")
+                else:
+                    why = ("refresh_ref" if refresh_ref else
+                           "no stored description" if not have else "reference changed")
+                    print(f"[llm-prompter] describing reference_image ({why}), "
+                          f"{len(ref_frames)} frame(s)")
+                    ref_content = [{"type": "text", "text": "Describe this person."}]
+                    for rf in ref_frames:
+                        ref_content.append(_image_item(_tensor_to_b64(rf, max_size)))
+                    ref_msgs = ([{"role": "system", "content": ref_sys}]
+                                + [{"role": "user", "content": ref_content}])
+                    face_block = _clean(self._gen(ref_msgs, run_seed, sampler), keep_think).strip()
+                _REF_LAST[key] = rhash
+
+            # The identity block is prepended AFTER cleaning but BEFORE prefix/suffix, so a LoRA
+            # trigger word still ends up first in the encoded prompt.
+            def finalize_with_face(raw):
+                return _wrap(_join_desc(face_block, _clean(raw, keep_think) if llm_enabled
+                                        else raw.strip()), prefix, suffix)
+
             if not frames:
                 msgs = base_msgs + [{"role": "user", "content": user_text}]
-                prompts = [finalize(self._gen(msgs, run_seed, sampler))]
+                prompts = [finalize_with_face(self._gen(msgs, run_seed, sampler))]
             elif mode == "batch":
-                print(f"[llm-prompter] Batch captioning {len(frames)} image(s)")
+                print(f"[llm-prompter] Batch captioning {len(frames)} image(s)"
+                      + (" (+ fixed identity block)" if face_block else ""))
                 for frame in cqdm(frames):
                     if mm.processing_interrupted():
                         raise mm.InterruptProcessingException()
+                    # ONLY the frame goes in. The face travels as text (face_block), not as an
+                    # image, so every caption in the batch carries the exact same identity.
                     content = [{"type": "text", "text": user_text},
                                _image_item(_tensor_to_b64(frame, max_size))]
                     msgs = base_msgs + [{"role": "user", "content": content}]
-                    prompts.append(finalize(self._gen(msgs, run_seed, sampler)))
+                    prompts.append(finalize_with_face(self._gen(msgs, run_seed, sampler)))
             else:  # composite
                 content = [{"type": "text", "text": user_text}]
                 for frame in frames:
                     content.append(_image_item(_tensor_to_b64(frame, max_size)))
                 msgs = base_msgs + [{"role": "user", "content": content}]
-                prompts = [finalize(self._gen(msgs, run_seed, sampler))]
+                prompts = [finalize_with_face(self._gen(msgs, run_seed, sampler))]
 
             LLMEngine.reset_context(chat_handler)
             if force_offload:
@@ -555,7 +723,7 @@ class ArtfatLLMPrompter:
             gc.collect()
         result = (positive, negative_cond, main_prompt, prompts,
                   image_1, image_2, queue, clip, [positive])
-        return {"ui": {"text": [main_prompt]}, "result": result}
+        return {"ui": {"text": [main_prompt], "ref_desc": [face_block]}, "result": result}
 
 
 NODE_CLASS_MAPPINGS = {"ArtfatLLMPrompter": ArtfatLLMPrompter}

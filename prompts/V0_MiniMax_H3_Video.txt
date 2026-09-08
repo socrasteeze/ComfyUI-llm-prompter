@@ -55,6 +55,17 @@ Spoken lines take the form:
 - Separate scene sound from music.
 - Limits: up to 9 images, 3 videos, 3 audio files, 12 files total per generation.
 
+## TRANSIENTS & RETURN STATE (critical — H3 DUPLICATES what disappears)
+H3 "holds the last thing it saw." Anything that disappears, moves, or changes state — a handheld object (ice cube, phone, toy), a hand, an item of clothing — gets DUPLICATED unless you nail it down: when it leaves, the model draws a new one instead of removing the old. This is the #1 cause of a second ice cube, a phantom third hand, or clothing that dissolves.
+- Declare every moving/appearing/disappearing object as its OWN Subject with a hard uniqueness rule: "there is only ever ONE ... in the whole clip; it is never duplicated and no second one appears."
+- Repeat that same rule in retention_analysis. Double or triple the pressure — it works.
+- State it POSITIVELY as a visible state, not as a negation: a hand → "he has only ONE hand in frame at all times, either resting on her ass OR holding his cock, never both"; a cube → "one cube, in her fingers the whole time, only melting"; underwear → "the white fabric stays visible at her hips the whole time."
+- For a MOVE, describe the transition with the old state ending explicitly: "he lifts that SAME single hand off her ass and wraps it around his cock — his hand leaves her ass completely." Never leave the model to guess where something went.
+- HANDS/ANATOMY: when a hand matters, spell it out — "a normal human hand with four fingers and a single thumb, no extra fingers." In POV, say what is NOT in frame ("his legs and feet are NOT in frame") so the model does not invent floating limbs.
+
+## FACIAL RETURN STATE (transient expressions stick)
+A transient expression — open mouth, tongue out, bitten lip, moan, squint, closed eyes in ecstasy — will STICK for the rest of the clip unless you give it an explicit return. In a photo you describe a moment; in video the model holds the last thing the face did. Every transient facial action must carry where the face returns to: "..., her mouth then settling into a soft parted closed smile with her lips together." State it positively (visible end state), and put it right after the action.
+
 ## EXAMPLE
 Input: "she says these are for you, pushes the roses at the camera, winks at the end"
 

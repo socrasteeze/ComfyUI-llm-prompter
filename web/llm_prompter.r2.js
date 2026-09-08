@@ -5,6 +5,9 @@ const ADVANCED = [
     "top_k", "top_p", "min_p", "typical_p", "repeat_penalty", "frequency_penalty",
     "mirostat_mode", "mirostat_tau", "mirostat_eta", "type_k", "type_v",
     "max_size", "image_min_tokens", "image_max_tokens",
+    // Set once per model and never touched again — and keeping them out of the visible column
+    // is what puts ref_preset / ref_description / refresh_ref directly under the batch fields.
+    "mtp_speculative", "mtp_draft_max",
 ];
 
 const HIDDEN = "artfat_hidden";
@@ -120,6 +123,8 @@ app.registerExtension({
 
             const fp = widget(node, "final_prompt");
             if (fp) fp.label = "final prompt (LLM output / manual input)";
+            const rd = widget(node, "ref_description");
+            if (rd) rd.label = "identity block (from reference_image, reused for every frame)";
 
             // --- Elastic multiline heights (freely resizable BOTH ways, and no "jump") -----------
             // All five text areas SHARE the node's free vertical space by weight, and each one's
@@ -133,9 +138,9 @@ app.registerExtension({
             // while the text areas report their MIN, so the split is exact (zero px drift).
             // Knobs: WEIGHT = how the free space is split (final_prompt gets the most); MIN = the
             // smallest each field may shrink to (also sets the node's minimum height).
-            const ML = ["system_prompt", "instruction", "user_preset", "negative", "final_prompt"];
-            const WEIGHT = { system_prompt: 1, instruction: 1, user_preset: 1, negative: 1, final_prompt: 4 };
-            const MIN = { system_prompt: 34, instruction: 34, user_preset: 34, negative: 34, final_prompt: 60 };
+            const ML = ["system_prompt", "instruction", "user_preset", "negative", "ref_description", "batch_prompts", "final_prompt"];
+            const WEIGHT = { system_prompt: 1, instruction: 1, user_preset: 1, negative: 1, ref_description: 1, batch_prompts: 2, final_prompt: 4 };
+            const MIN = { system_prompt: 34, instruction: 34, user_preset: 34, negative: 34, ref_description: 28, batch_prompts: 32, final_prompt: 45 };
             const SUMMIN = ML.reduce((a, n) => a + MIN[n], 0);
             const SUMW = ML.reduce((a, n) => a + WEIGHT[n], 0);
             let inCompute = false;
@@ -154,7 +159,7 @@ app.registerExtension({
             // loaded from a saved workflow keeps its saved size — it is restored AFTER onNodeCreated,
             // so this only affects new nodes; the user can still drag it to any size afterwards.
             setTimeout(() => {
-                const want = 1000;
+                const want = 1120;
                 if (node.size[1] < want) node.setSize([node.size[0], want]);
             }, 25);
 
@@ -192,6 +197,17 @@ app.registerExtension({
             if (w) {
                 w.value = text;
                 this.setDirtyCanvas(true, true);
+            }
+            // The identity block described from reference_image. It is written back so the node
+            // reuses it verbatim on every later run instead of asking the LLM again — and so the
+            // user can read and edit the exact wording that gets prepended to every caption.
+            if (message.ref_desc !== undefined) {
+                const rd = Array.isArray(message.ref_desc) ? message.ref_desc.join("\n\n") : message.ref_desc;
+                const rw = widget(this, "ref_description");
+                if (rw && rd) {
+                    rw.value = rd;
+                    this.setDirtyCanvas(true, true);
+                }
             }
         };
     },

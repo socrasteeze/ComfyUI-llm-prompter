@@ -19,6 +19,12 @@ import folder_paths
 _HERE = os.path.dirname(os.path.abspath(__file__))
 BUNDLED_DIR = os.path.join(_HERE, "prompts")
 USER_DIR = os.path.join(folder_paths.models_dir, "LLM", "prompts")
+# Reference presets live in their own subfolder. They describe a PERSON, not a scene, so they
+# must never appear in the scene dropdown and no scene preset may appear in theirs — picking the
+# wrong one produces an identity block that is silently prepended to every caption in a batch.
+# The split costs nothing: the listers below only collect *.txt, so a subdirectory is skipped.
+BUNDLED_REF_DIR = os.path.join(BUNDLED_DIR, "reference")
+USER_REF_DIR = os.path.join(USER_DIR, "reference")
 # Kept for backward compatibility (older code/imports referenced PROMPTS_DIR).
 PROMPTS_DIR = USER_DIR
 
@@ -50,6 +56,21 @@ INSTRUCTION_PRESETS = {
         "Refine and enhance the following prompt for text-to-image generation. Keep its meaning "
         "and key words, make it more expressive and visually rich. Output only the improved prompt "
         "text itself, with no reasoning, thinking or commentary."
+    ),
+    "Ref face (Image1) + frame (Image2)": (
+        "Take the face and head shape from the FIRST image and everything else from the "
+        "SECOND image - body, pose, hair styling, clothing, light, environment, framing. "
+        "The woman in the second image is given the first woman's face. Reproduce that face "
+        "exactly, never narrowing or beautifying it. Output only the final prompt as one paragraph."
+    ),
+    "Scene only (face comes from ref_description)": (
+        "Describe ONLY what changes from photo to photo: shot size and framing, camera height "
+        "and angle, body and build, pose, hair styling, clothing, footwear and jewellery, skin "
+        "of the body, light source and direction, environment and props, and the image character "
+        "(grain, sharpness, exposure). Do NOT describe the face, head shape or facial features - "
+        "the identity is supplied separately and prepended to your text, so describing it again "
+        "would contradict it. Start straight at the framing. Output only the description as one "
+        "flowing paragraph, no preamble."
     ),
     "Replace subject (Image1 scene + Image2 person)": (
         "Generate a detailed prompt describing the reference Image 1. Replace the person from "
@@ -88,6 +109,41 @@ def list_system_presets():
         except Exception as e:
             print(f"[llm-prompter] Could not list system presets in {d}: {e}")
     return ["Custom"] + sorted(seen, key=str.lower)
+
+
+def list_ref_presets():
+    """Dropdown values for ref_preset: 'Custom' plus every .txt from prompts/reference/ and
+    models/LLM/prompts/reference/ (deduped by filename, user dir wins, case-insensitive sort)."""
+    seen = set()
+    for d in (BUNDLED_REF_DIR, USER_REF_DIR):
+        try:
+            if os.path.isdir(d):
+                for fn in os.listdir(d):
+                    if fn.lower().endswith(".txt"):
+                        seen.add(fn)
+        except Exception as e:
+            print(f"[llm-prompter] Could not list reference presets in {d}: {e}")
+    return ["Custom"] + sorted(seen, key=str.lower)
+
+
+def load_ref_preset(name):
+    """Text of a reference preset, or None for 'Custom'/missing. User copy wins.
+
+    Falls back to the flat prompts/ dir so a workflow saved before the split — when
+    Face_Only_Identity_Im1.txt still lived there — keeps resolving instead of silently
+    dropping to the built-in instruction.
+    """
+    if not name or name in ("Custom", "None"):
+        return None
+    for d in (USER_REF_DIR, BUNDLED_REF_DIR, USER_DIR, BUNDLED_DIR):
+        path = os.path.join(d, name)
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+        except Exception as e:
+            print(f"[llm-prompter] Could not read reference preset {path}: {e}")
+    return None
 
 
 def load_system_preset(name):
