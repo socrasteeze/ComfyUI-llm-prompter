@@ -384,6 +384,36 @@ Requires `llama-cpp-python` 0.3.48 or newer; `install.py` handles that for you.
 
 ## Changelog
 
+### 0.5.0 — the reference face is described once, not once per frame
+
+- **Reference description is cached by content hash.** `reference_image` used to be re-described
+  on every frame, so a batch of six produced six subtly different faces. The description is now
+  keyed by a hash of the reference pixels plus the ref preset text: the same hash reuses the stored
+  block with no LLM call at all, a swapped image or a changed preset produces exactly one fresh
+  description. The cache is process-local, so a ComfyUI restart starts clean and the text saved in
+  the workflow is used as-is.
+- **`ref_description` is written back to the node.** The identity block that gets prepended to every
+  caption is now visible and editable, instead of being regenerated invisibly on each run.
+- **`refresh_ref` forces one re-description** when you want it regardless of the hash.
+- **Reference presets live in `prompts/reference/` with their own dropdown.** They describe a PERSON,
+  not a scene, and mixing the two silently prepended an identity block to every caption in a batch.
+  The scene lister only collects `*.txt` from its own directory, so a subdirectory is skipped and
+  the split costs nothing.
+- **Two new presets.** `Ref face (Image1) + frame (Image2)` takes the face from the first image and
+  everything else from the second. `Scene only (face comes from ref_description)` describes only
+  what changes between frames and never the face, so it cannot contradict the identity block that
+  is prepended to it.
+- **Prefix/suffix wrapping is idempotent.** Re-running a node no longer stacks another copy of the
+  wrapper onto text that already has it.
+- **Warns when a two-image preset runs with a single image**, instead of quietly producing half a
+  description.
+- New bundled prompts: `AA_Outfit_Smartphone_Default`, `Ref_Face_Plus_Frame`, `Scene_NoFace_Im2`,
+  `reference/Face_Only_Identity_Im1`. Updated: `Face detailed_Edit mode_Im1` / `Im2`,
+  `K1_Krea2_HighDetailed`, `V0_MiniMax_H3_Video`.
+- **UI:** `ref_preset` / `ref_description` / `refresh_ref` now sit directly under the batch fields,
+  and the MTP knobs moved out of the visible column — they are set once per model and never touched
+  again.
+
 ### 0.4.1 — clearer handler names
 
 - Handler entries now state the mode: `(thinking)` / `(no thinking)`. The four separate
