@@ -7,6 +7,7 @@ CLIP Text Encode nodes needed.
 
 ```
 (image_1 / image_2 / text) --> LLM --> prompt --> CLIP --> CONDITIONING
+         reference_image  --> LLM --> identity block (described once, reused)
 ```
 
 ![Two reference images composited into a new photo by the node](img/example.png)
@@ -25,6 +26,9 @@ the café setting of Image 2.*
   `final_prompt`, the node reuses it verbatim straight into the sampler: **the LLM is not called
   and the model is not even loaded**. Switch to `randomize` (or clear the box) to generate a fresh
   one. Iterate on the image at zero LLM cost.
+- **One face across a whole batch** — connect `reference_image` and the identity is described
+  once, then prepended to every caption verbatim. Six frames stop being six subtly different
+  women. See [Fixed identity across a batch](#fixed-identity-across-a-batch-reference_image).
 - **Built-in CLIP Text Encode** — turn `llm_enabled` off and the node just encodes your
   `final_prompt` text as plain positive/negative CONDITIONING.
 - **Low-VRAM friendly** — `vram_limit`, `n_cpu_moe` (MoE expert offload), KV-cache
@@ -39,6 +43,10 @@ the café setting of Image 2.*
   (Describe / Tags / Cinematic / Replace subject / Appearance only / …). Both auto-fill an
   editable box so you see and can tweak the text live.
 - A free `user_preset` field for ad-hoc instructions (not written to any file).
+- **`reference_image` + `ref_preset` / `ref_description` / `refresh_ref`** — a fixed identity
+  block, described once and reused for every frame in a batch. Reference presets live in their
+  own `prompts/reference/` folder with a separate dropdown, so a scene preset can never end up
+  describing a person.
 - Editable **`final_prompt`** box — the LLM writes its result there (copy or hand-edit it); with the
   LLM off it becomes your manual prompt box. A `fixed` seed **freezes** it (reuse, no LLM run, no
   model load); `randomize` regenerates.
@@ -86,6 +94,62 @@ name the images explicitly work best.
 > the **Qwen-VL / Qwen3.5** family and **MiniCPM-V** handle it well. Single-image models (LLaVA,
 > Moondream) effectively see only one. If the second image seems ignored, switch to a multi-image
 > model. Single-image captioning works on any VLM.
+
+## Fixed identity across a batch (`reference_image`)
+
+Captioning a dataset frame by frame has one recurring failure: the model describes the face
+it sees in each frame, and those descriptions drift. Six images become six subtly different
+women, and a LoRA trained on that learns the average of all six.
+
+`reference_image` fixes it by moving identity out of the per-frame call entirely.
+
+**How it works**
+
+1. The reference is described **once**, using `ref_preset` — a face-only instruction.
+2. That text lands in `ref_description`, visible and editable on the node.
+3. Every frame's caption gets it **prepended verbatim**. Same words, every time.
+4. The reference image itself is **never sent with the frames**, so the model cannot look at the
+   frame's own face and re-describe it.
+
+The description is cached by a hash of the reference pixels plus the `ref_preset` text. Same hash
+means the stored block is reused with **no LLM call for the reference at all**; swap the image or
+change the preset and it is described exactly once more. The cache is process-local — after a
+ComfyUI restart the text saved in your workflow is used as-is.
+
+**Setting it up**
+
+| Field | Set it to |
+|---|---|
+| `reference_image` | A clean, well-lit shot of the face. Frontal works best |
+| `ref_preset` | A face-only preset from `prompts/reference/` — e.g. `Face_Only_Identity_Im1` |
+| `instruction_preset` | **`Scene only (face comes from ref_description)`** |
+| `mode` | `batch` |
+
+**The one thing that breaks it**
+
+🔴 With `reference_image` connected, each caption call carries **exactly one** image. An
+instruction that says *"take the face from the FIRST image"* now sends the model hunting for a
+picture that is not there — it falls back to the frame's own face and invents an identity, which
+is the very drift you connected the reference to prevent.
+
+Use a **scene-only** instruction: describe framing, pose, clothing, light, environment — never the
+face. The node detects two-image wording and prints a warning, but it cannot fix the preset for you.
+
+The same rule applies to `ref_preset` in the other direction: it must contain **nothing
+scene-specific**. No clothing, no pose, no lighting, no background — that block goes onto every
+caption in the batch, so anything scene-specific in it will contradict every frame.
+
+**`refresh_ref`**
+
+Ticking it re-describes the reference even though nothing changed. Use it after hand-editing
+`ref_preset`, or when you want a second opinion on the same face. Clearing `ref_description`
+does the same thing.
+
+**Editing the block by hand**
+
+`ref_description` is yours to rewrite. Whatever is in that box is what gets prepended — the node
+does not check it against the image. If the model got an eyebrow colour wrong, fix the sentence
+once and every future caption in every future batch carries the corrected version.
 
 ## Install
 
@@ -266,6 +330,11 @@ collapsible **▸ advanced** section — compact by default, everything on deman
 | `force_offload` | Unload the LLM after running (frees VRAM; next call reloads) |
 | advanced | `max_tokens`, `temperature`, `top_k`, `top_p`, `min_p`, `typical_p`, `repeat_penalty`, `frequency_penalty`, `mirostat_*`, `type_k`/`type_v` (KV quant), `max_size`, `image_min/max_tokens` |
 | `image_1` / `image_2` / `clip` / `queue` | optional |
+| `reference_image` | **Identity reference — optional.** Described **once** with `ref_preset`, and that text is prepended to every caption, so every frame in a batch carries the exact same face. The image itself is never sent with the frames, so the model cannot re-describe the face and drift between captions. Re-described only when this image changes, or on `refresh_ref`. Pair it with a scene-only instruction so the face is not described twice |
+| `ref_preset` | Preset for the one call that describes `reference_image`. Lives in `prompts/reference/`, separate from the scene dropdown. Face-only presets work best — the block goes onto every caption, so it must contain nothing scene-specific (no clothing, pose, light or background) |
+| `ref_description` | The identity block itself, filled in by the node and reused verbatim while the reference does not change. Editable: your text is what gets prepended. Clear it (or tick `refresh_ref`) to have the reference described again |
+| `refresh_ref` | Describe `reference_image` again even though it has not changed. Use after editing `ref_preset` by hand, or for a second opinion on the same face |
+| `mtp_speculative` / `mtp_draft_max` | Speculative decoding via the NextN heads in an `-mtp` GGUF — see [MTP](#mtp-speculative-decoding). Skipped automatically when the model has no NextN tensors or an mmproj is loaded |
 | `batch_mode` / `batch_prompts` | Run a list of ready prompts instead of the LLM — see [Batch prompts](#batch-prompts) |
 
 ## Outputs
@@ -297,6 +366,11 @@ ComfyUI runs the graph once per list item, so ten prompts give you ten images.
 
 Lines starting with `#` are comments, blank lines are skipped, and `prefix` / `suffix`
 still wrap every prompt — so a trigger word stays applied across the whole batch.
+
+> **Not the same as `reference_image`.** `batch_mode` skips the LLM entirely, so nothing is
+> described and the reference is never consulted. For captioning a dataset *with* a fixed
+> identity, leave `batch_mode` off and use `mode = batch` instead — see
+> [Fixed identity across a batch](#fixed-identity-across-a-batch-reference_image).
 
 ## Seed = freeze / regenerate
 
@@ -344,6 +418,10 @@ keep it resident and enjoy near-instant prompts.
   prompt reaches CLIP.
 - **Batch a dataset.** Set `mode = batch`, feed a batch of images into `image_1`, and read
   `prompt_list` — one caption per image, ready for LoRA training.
+- **Keep one face across that dataset.** Connect `reference_image` and switch the instruction to
+  `Scene only (face comes from ref_description)`. The identity is described once and prepended to
+  every caption, so the model cannot drift from frame to frame — see
+  [Fixed identity across a batch](#fixed-identity-across-a-batch-reference_image).
 - **Share VRAM with diffusion.** On tight VRAM turn `force_offload` on (frees the LLM after each run)
   and/or raise `n_cpu_moe` on MoE models. Keep `force_offload` off for instant repeat prompting.
 
