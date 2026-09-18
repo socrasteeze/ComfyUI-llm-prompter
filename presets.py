@@ -91,6 +91,38 @@ INSTRUCTION_PRESETS = {
         "Combine the architecture and composition of Image 1 with the time-of-day lighting and "
         "colour mood of Image 2 into a single text-to-image prompt. Output only the prompt."
     ),
+    "Pose only": (
+        "Describe only the body pose and positioning: limb placement, weight and balance, torso "
+        "and head orientation, gaze direction, hand placement, the body's angle to the camera, "
+        "the framing and shot size as it relates to the pose, and, if more than one figure is "
+        "present, their spatial relation to each other. Do not describe identity, face features, "
+        "hair, clothing, colours, environment, lighting or art style/medium. Express the result "
+        "in the output format defined by the system prompt. Output only the result."
+    ),
+    "Style only": (
+        "Describe only the visual style: medium and technique, rendering and linework, colour "
+        "palette and grading, lighting character, texture and grain, era and aesthetic. Do not "
+        "describe who or what is depicted, pose, clothing or setting specifics. The result must "
+        "be reusable on any unrelated subject. Express the result in the output format defined "
+        "by the system prompt. Output only the result."
+    ),
+    "Style transfer (Image1 subject + Image2 style)": (
+        "Two images are provided: Image 1 is the subject source, Image 2 is the style source. "
+        "Take the subject and composition - what is depicted, the pose, the framing and the "
+        "layout - from the subject source. Take "
+        "only the visual style from the style source: its medium and technique, rendering and "
+        "linework, colour palette and grading, lighting character, texture and grain, era and "
+        "aesthetic. Nothing depicted in the style source - its people, objects or setting - may "
+        "carry over, and none of the original style belonging to the subject source may carry "
+        "over. Describe the subject and composition rendered entirely in the borrowed style. "
+        "Express the result in the output format defined by the system prompt. Output only the "
+        "result."
+    ),
+    "Full composition": (
+        "Describe everything visible: subject(s), pose, clothing, environment, framing, lighting, "
+        "colour and style. Express the result in the output format defined by the system prompt. "
+        "Output only the result."
+    ),
 }
 
 INSTRUCTION_NAMES = list(INSTRUCTION_PRESETS.keys())
