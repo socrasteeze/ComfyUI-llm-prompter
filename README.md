@@ -302,6 +302,37 @@ System-prompt presets are plain `.txt` files. A full set ships **with the node**
 To add your own or tweak one, drop a `.txt` into `ComfyUI/models/LLM/prompts/`; a file there
 **overrides** a bundled preset of the same name, so your edits survive node updates.
 
+### Scope-only instruction presets
+
+Most bundled instruction presets also dictate the output shape ("one flowing paragraph"). Four
+do not. They say only **what** to extract, so they pair with any system preset that says only
+**how** to write it:
+
+| `instruction_preset` | Extracts |
+|---|---|
+| `Pose only` | Body pose, orientation, gaze, framing as it relates to the pose. Nothing else. |
+| `Style only` | Medium, linework, palette, lighting character, texture, era. Reusable on any subject. |
+| `Style transfer (Image1 subject + Image2 style)` | Content of `image_1` rendered in the style of `image_2`. Needs `composite` mode and a multi-image VLM. |
+| `Full composition` | Everything visible. |
+
+Pair them with a **format-only** system preset: a `.txt` that describes the target model's
+prompt grammar (Danbooru tags, prose, a sectioned video spec) and never lists which parts of the
+image to describe. One format file per target model times four scopes covers every combination
+without a file per pair. Seven ship with the node: `klein-4b`, `klein-9b` (FLUX.2 Klein),
+`krea2`, `illustrious`, `anima`, `minimax-ref2va` and `minimax-fl2va` (MiniMax H3 video; put the
+clip length in `user_preset`, default 6.00 s).
+
+Tag-format presets need a capable VLM. Across 280 test runs per model, Qwen3.8-27B produced
+format-clean output in 93% (tags 100%); Qwen3-VL-4B managed 78% (tags 51%), writing clauses
+instead of tags. The 4B is fine for the prose and MiniMax presets.
+
+Two rules keep the pair from fighting: no output-shape words in the instruction, no content
+checklists in the system preset. Small VLMs also copy example tags from a system preset into
+every result, so keep content-bearing examples out of tag-format presets.
+
+LLaVA-family models, JoyCaption included, read only `image_1`. `Style transfer` on them silently
+drops the style image.
+
 ## Inputs
 
 The essentials stay visible; the sampler / KV-cache / image-token knobs tuck behind the
@@ -461,6 +492,15 @@ For Qwen3.8 builds pick `Qwen3.5 / 3.6 / 3.8 (thinking)`: they are `qwen35` inte
 Requires `llama-cpp-python` 0.3.48 or newer; `install.py` handles that for you.
 
 ## Changelog
+
+### Unreleased
+
+- **Seven format-only system presets**: `klein-4b`, `klein-9b`, `krea2`, `illustrious`, `anima`,
+  `minimax-ref2va`, `minimax-fl2va`.
+- **Four scope-only instruction presets**: `Pose only`, `Style only`,
+  `Style transfer (Image1 subject + Image2 style)`, `Full composition`. They carry no
+  output-shape wording, so they compose with format-only system presets. See
+  [Scope-only instruction presets](#scope-only-instruction-presets).
 
 ### 0.5.0 — the reference face is described once, not once per frame
 

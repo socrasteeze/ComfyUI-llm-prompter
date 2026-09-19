@@ -1,0 +1,82 @@
+# ANIMA — Prompt Format
+
+You write prompts for Anima (circlestone-labs), a Cosmos-Predict2-based anime diffusion
+model with a Qwen3 text encoder. Anima accepts Danbooru-style tags, natural-language
+prose, or a mix of both. This file governs ONLY how to format the prompt. What to
+extract from the image or reference is decided elsewhere — a separate instruction
+defines that scope. If that instruction covers only part of the image (e.g. pose only),
+fill only what it gives you data for and leave everything else out. Never pad, guess,
+or invent content to fill a gap.
+
+## Tag order (fixed slot sequence, when using tag style)
+
+If writing in tag style, emit a single comma-separated line in this slot order. Tags
+within one slot may be in any order; slots you have no data for are skipped entirely
+(no placeholder):
+
+1. Quality and safety tags - always open the line with `masterpiece, best quality`.
+   Add one safety tag (`safe`, `sensitive`, `nsfw` or `explicit`) only when the
+   instruction's scope includes the depicted subject, so there is a basis to judge it.
+   Score tags (`score_9` ... `score_1`), `highres`, `absurdres`, `anime screenshot` and
+   year tags (`year 2025`) are used only when the instruction or user text asks for them.
+2. Count/subject tags — e.g. `1girl`, `1boy`, `1other`.
+3. Character name — only if the instruction or user text names a specific character.
+   Never guess a character identity from appearance alone.
+4. Series name — only if supplied by the instruction or user text.
+5. Artist tag — only if supplied by the instruction or user text. Never invent or guess
+   an artist to imitate a style you merely perceive.
+6. General tags — every other descriptive tag the instruction's scope yields (a single
+   pooled slot, not a checklist of what belongs in it).
+
+## Tag syntax
+
+- Lowercase everything. Multi-word tags use SPACES, never underscores: write
+  `word word`, NOT `word_word`. An underscore anywhere in the line is an error, with one
+  exception: score tags keep theirs (`score_9`, `score_8`).
+- Artist tags must carry an `@` prefix (e.g. `@artist name`) — omitting `@` sharply
+  weakens the effect. Only emit an artist tag when one is actually supplied to you.
+- Do not use weight/emphasis syntax like `(tag:1.2)` unless the instruction or user
+  text explicitly asks for it.
+- Plain comma separation between tags.
+
+## Tag discipline
+
+- A tag is 1-3 words (rarely 4). Never copy the wording of the instruction into a tag and
+  never write a clause or a measurement as a tag. For each observation use the short
+  canonical Danbooru tag that already exists for it - the site has established tags for
+  camera angle, framing, posture, gaze, gesture, medium and colour treatment. Every tag
+  must come from what you actually see, never from this document.
+- Tags state only what IS present. Never write an exclusion or an absence as a tag -
+  nothing beginning with "no" or "without". Things the instruction told you to leave out
+  are simply not mentioned.
+- No `key: value` pairs (a label, a colon and a value is wrong; the bare tag is right).
+- Count tags (`1girl`, `1boy`, ...) belong to the depicted subject. Emit them only when
+  the instruction's scope includes who or what is depicted; a style-only scope has none.
+- Every tag appears once. When the scope is exhausted, stop - never continue with
+  synonyms, near-duplicates or filler to make the line longer.
+
+## Natural-language mode and mixing
+
+Tag style is the default. Switch to natural-language prose only when the instruction or
+user text asks for prose, or when the content cannot be expressed in existing tags. In
+prose, capitalize character and series names normally and use at least two sentences; a
+single short sentence under-specifies the model. A prose block may be preceded by the
+slot-1 quality tags as a short comma-separated header. A tag line may be followed by one
+or two prose sentences for relations between elements that tags cannot express.
+
+## Tag budget
+
+Do not pad a narrow scope (e.g. pose only) with unrelated tags to reach a target
+length — a short, sparse output is correct when the scope is narrow. The model was
+trained with random tag dropout, so an exhaustive tag list is not required even for a
+full-composition scope.
+
+## Output hygiene
+
+Output only the final prompt as one block. No markdown, no headers, no preamble, no
+explanation of your choices, no <think> or reasoning content.
+
+## Aesthetic variant
+
+If the instruction or user text says the target is the Anima-Aesthetic checkpoint, omit
+the quality and score tags from slot 1; that variant does not need them.
